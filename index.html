@@ -456,16 +456,14 @@ header {
 
     <!-- Three.js GLB Viewer -->
     <div id="glb-viewer-wrap" style="position:relative;width:100%;height:520px;background:#0d0d12;border:1px solid var(--border);border-radius:4px;margin-top:16px;overflow:hidden;">
-      <!-- Drop overlay -->
+      <!-- Loading overlay (auto-load) -->
       <div id="drop-overlay" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10;gap:16px;background:rgba(10,10,14,0.96)">
-        <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect x="8" y="8" width="48" height="48" rx="6" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" stroke-dasharray="6 4"/><path d="M32 20v18M24 30l8 8 8-8" stroke="rgba(232,49,42,0.8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="18" y="44" width="28" height="4" rx="2" fill="rgba(232,49,42,0.15)"/></svg>
-        <div style="font-family:'Bebas Neue';font-size:20px;letter-spacing:4px;color:var(--text)">CARICA IL MODELLO GLB</div>
-        <div style="font-family:'Share Tech Mono';font-size:11px;color:var(--muted);text-align:center;line-height:1.7">Trascina qui il file <strong style="color:var(--text)">MGW_Monster.glb</strong><br>oppure clicca per selezionarlo</div>
-        <label style="cursor:pointer;padding:8px 22px;border:1px solid var(--lexar);color:var(--lexar);font-family:'Rajdhani';font-weight:700;font-size:13px;letter-spacing:1.5px;text-transform:uppercase;border-radius:2px;transition:all 0.15s" onmouseover="this.style.background='var(--lexar)';this.style.color='white'" onmouseout="this.style.background='transparent';this.style.color='var(--lexar)'">
-          Sfoglia file
-          <input type="file" id="glb-input" accept=".glb,.gltf" style="display:none">
-        </label>
-        <div id="glb-load-status" style="font-family:'Share Tech Mono';font-size:10px;color:var(--muted);display:none"></div>
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect x="8" y="8" width="48" height="48" rx="6" stroke="rgba(232,49,42,0.3)" stroke-width="1.5"/><path d="M20 32h24M32 20v24" stroke="rgba(232,49,42,0.8)" stroke-width="2" stroke-linecap="round"/></svg>
+        <div style="font-family:'Bebas Neue';font-size:20px;letter-spacing:4px;color:var(--text)">MGW MONSTER ARENA</div>
+        <div id="glb-load-status" style="font-family:'Share Tech Mono';font-size:11px;color:var(--muted);text-align:center;line-height:1.9">Connessione al server…</div>
+        <div style="width:240px;height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden">
+          <div id="progress-bar" style="height:100%;width:0%;background:var(--lexar);transition:width 0.3s ease;border-radius:1px"></div>
+        </div>
       </div>
 
       <!-- Three.js canvas -->
@@ -5196,24 +5194,101 @@ function toggleWireframe() {
 
 function rotateCam() { /* legacy — no-op with Three.js */ }
 
-/* ─── Drag & Drop ─── */
-const wrap = document.getElementById('glb-viewer-wrap');
-wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.style.borderColor = 'var(--lexar)'; });
-wrap.addEventListener('dragleave', () => { wrap.style.borderColor = 'var(--border)'; });
-wrap.addEventListener('drop', e => {
-  e.preventDefault();
-  wrap.style.borderColor = 'var(--border)';
-  const file = e.dataTransfer.files[0];
-  if(file && (file.name.endsWith('.glb') || file.name.endsWith('.gltf'))) loadGLB(file);
-});
+/* ─── Auto-load GLB from GitHub ─── */
+const GLB_URL = 'MGW_Monster.glb';
 
-document.getElementById('glb-input').addEventListener('change', e => {
-  const file = e.target.files[0];
-  if(file) loadGLB(file);
-});
+function setProgress(pct, msg) {
+  document.getElementById('glb-load-status').textContent = msg;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
 
-/* Init Three.js immediately so canvas is ready */
+function loadGLBFromUrl(url) {
+  setProgress(5, 'Connessione al server…');
+  fetch(url)
+    .then(res => {
+      if(!res.ok) throw new Error('HTTP ' + res.status);
+      const total = parseInt(res.headers.get('content-length') || '0');
+      const reader = res.body.getReader();
+      let loaded = 0;
+      const chunks = [];
+      function read() {
+        return reader.read().then(({ done, value }) => {
+          if(done) return;
+          chunks.push(value);
+          loaded += value.length;
+          if(total > 0) {
+            const pct = Math.round(loaded / total * 90);
+            setProgress(5 + pct, `Download modello… ${Math.round(loaded/1024/1024)}MB / ${Math.round(total/1024/1024)}MB`);
+          } else {
+            setProgress(50, `Download modello… ${Math.round(loaded/1024/1024)}MB`);
+          }
+          return read();
+        });
+      }
+      return read().then(() => {
+        const blob = new Blob(chunks);
+        return blob.arrayBuffer();
+      });
+    })
+    .then(arrayBuffer => {
+      setProgress(96, 'Parsing modello 3D…');
+      const loader = new GLTFLoader();
+      loader.parse(arrayBuffer, '', (gltf) => {
+        if(model) { scene.remove(model); model = null; }
+        model = gltf.scene;
+        model.traverse(node => {
+          if(node.isMesh) {
+            node.castShadow = true;
+            node.receiveShadow = true;
+            if(node.material) {
+              const mats = Array.isArray(node.material) ? node.material : [node.material];
+              mats.forEach(m => {
+                m.needsUpdate = true;
+                if(m.map) m.map.colorSpace = THREE.SRGBColorSpace;
+                if(m.emissiveMap) m.emissiveMap.colorSpace = THREE.SRGBColorSpace;
+              });
+            }
+          }
+        });
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const scale = 20 / maxDim;
+        model.scale.setScalar(scale);
+        const scaledBox0 = new THREE.Box3().setFromObject(model);
+        model.position.set(-center.x * scale, -scaledBox0.min.y, -center.z * scale);
+        scene.add(model);
+        const scaledBox = new THREE.Box3().setFromObject(model);
+        const scaledCenter = scaledBox.getCenter(new THREE.Vector3());
+        const scaledSize = scaledBox.getSize(new THREE.Vector3());
+        const dist = Math.max(scaledSize.x, scaledSize.z) * 1.4;
+        camera.position.set(scaledCenter.x + dist, scaledCenter.y + dist * 0.7, scaledCenter.z + dist);
+        controls.target.copy(scaledCenter);
+        controls.update();
+        document.getElementById('viewer-controls').style.display = 'flex';
+        document.getElementById('model-info-badge').style.display = 'block';
+        document.getElementById('model-info-badge').innerHTML =
+          `<span style="color:var(--neon)">■</span> MGW Monster Arena<br>` +
+          `Dims: ${size.x.toFixed(1)} × ${size.z.toFixed(1)} × ${size.y.toFixed(1)} m`;
+        setProgress(100, 'Caricato!');
+        setTimeout(() => {
+          document.getElementById('drop-overlay').style.display = 'none';
+        }, 600);
+      }, err => {
+        setProgress(0, 'Errore parsing: ' + (err.message || err));
+        console.error(err);
+      });
+    })
+    .catch(err => {
+      setProgress(0, 'Errore download: ' + err.message);
+      console.error(err);
+    });
+}
+
+/* Init Three.js and auto-load */
 initThree();
+loadGLBFromUrl(GLB_URL);
 </script>
 </body>
 </html>
